@@ -8,12 +8,71 @@
 #include <sys/wait.h>
 #include <cstring>
 #include <sys/stat.h>
-#include <cstdlib>  // For system()
+#include <cstdlib>
+#include <map>
+#include <algorithm>
+#include <filesystem>
+
+namespace fs = std::filesystem;
+
+// Global variable map for variable storage
+std::map<std::string, std::string> envVars;
+
+// Function to expand variables (e.g., $VAR -> value)
+std::string expandVariables(const std::string& input) {
+    std::string result = input;
+    size_t pos = 0;
+    while ((pos = result.find("$", pos)) != std::string::npos) {
+        size_t endPos = result.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", pos + 1);
+        std::string varName = result.substr(pos + 1, endPos - pos - 1);
+        if (envVars.find(varName) != envVars.end()) {
+            result.replace(pos, endPos - pos, envVars[varName]);
+        } else {
+            pos = endPos;  // Move past the variable name
+        }
+    }
+    return result;
+}
+
+// Function to handle command substitution $(command)
+std::string performCommandSubstitution(const std::string& input) {
+    size_t start = input.find('$');
+    if (start == std::string::npos) return input;
+
+    size_t end = input.find(')', start);
+    if (end != std::string::npos && input[start + 1] == '(') {
+        std::string command = input.substr(start + 2, end - start - 2);
+        FILE* fp = popen(command.c_str(), "r");
+        if (!fp) {
+            std::cerr << "Error executing command substitution" << std::endl;
+            return input;
+        }
+        char buffer[256];
+        std::string output;
+        while (fgets(buffer, sizeof(buffer), fp)) {
+            output += buffer;
+        }
+        fclose(fp);
+        return input.substr(0, start) + output + input.substr(end + 1);
+    }
+    return input;
+}
+
+// Function to expand tilde (~) to the home directory
+std::string expandTilde(const std::string& input) {
+    if (input[0] == '~') {
+        const char* home = getenv("HOME");
+        if (home) {
+            return std::string(home) + input.substr(1);
+        }
+    }
+    return input;
+}
 
 void executeCommand(const std::vector<std::string>& args) {
     // Check if the command is "clear"
     if (args.size() == 1 && args[0] == "clear") {
-        system("clear");  // Clear the terminal
+        system("clear");
         return;
     }
 
@@ -64,7 +123,10 @@ std::vector<std::string> scanExecutables(const std::string& dirPath) {
     return executables;
 }
 
-void parseInput(const std::string& input) {
+void parseInput(std::string input) {
+    input = expandTilde(input);  // Expand ~ to home directory
+    input = performCommandSubstitution(input);  // Perform $(command) substitution
+
     std::istringstream stream(input);
     std::string token;
     std::vector<std::string> command;
@@ -83,8 +145,13 @@ void parseInput(const std::string& input) {
             continue;
         } else if (token == "|") {
             // Handle pipe (this will require more complex implementation with pipe() system call)
-            // For now, we just break
             break;
+        } else if (token.find('=') != std::string::npos) {  // Variable assignment (e.g., VAR=value)
+            size_t pos = token.find('=');
+            std::string varName = token.substr(0, pos);
+            std::string varValue = token.substr(pos + 1);
+            envVars[varName] = varValue;
+            continue;
         }
 
         command.push_back(token);
@@ -99,11 +166,8 @@ int main() {
     std::string input;
     const std::string binDir = "/usr/bin";
 
-    // Scan for executables in /usr/bin
-    std::vector<std::string> executables = scanExecutables(binDir);
-
     while (true) {
-        std::cout << "pyro >   ";
+        std::cout << "PyroShell$ ";
         std::getline(std::cin, input);
 
         if (input == "exit") {
