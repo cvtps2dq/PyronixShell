@@ -28,7 +28,7 @@ char* completionGenerator(const char* text, int state) {
                 try {
                     for (const auto& entry : fs::directory_iterator(dir)) {
                         std::string name = entry.path().filename().string();
-                        if (name.find(prefix) == 0 && (entry.status().permissions() & fs::perms::owner_exec)) {
+                        if (name.find(prefix) == 0 && static_cast<bool>(entry.status().permissions() & fs::perms::owner_exec)) {
                             matches.push_back(name + " ");
                         }
                     }
