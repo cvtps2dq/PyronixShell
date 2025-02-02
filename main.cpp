@@ -12,11 +12,14 @@
 #include <map>
 #include <algorithm>
 #include <filesystem>
+#include <termios.h>
 
 namespace fs = std::filesystem;
 
 // Global variable map for variable storage
 std::map<std::string, std::string> envVars;
+std::vector<std::string> history;  // Store command history
+size_t historyIndex = 0;          // Current position in history
 
 // Function to expand variables (e.g., $VAR -> value)
 std::string expandVariables(const std::string& input) {
@@ -34,7 +37,7 @@ std::string expandVariables(const std::string& input) {
     return result;
 }
 
-// Function to handle command substitution $(command)
+// Function to perform command substitution $(command)
 std::string performCommandSubstitution(const std::string& input) {
     size_t start = input.find('$');
     if (start == std::string::npos) return input;
@@ -143,31 +146,62 @@ void executeCommand(std::vector<std::string>& args) {
     }
 }
 
-bool isExecutable(const std::string& path) {
-    struct stat statbuf;
-    if (stat(path.c_str(), &statbuf) == 0) {
-        return (statbuf.st_mode & S_IXUSR) != 0;  // Check if it's executable by the user
-    }
-    return false;
-}
+// Function to capture user input with arrow keys
+std::string readInputWithHistory() {
+    std::string input;
+    char ch;
 
-std::vector<std::string> scanExecutables(const std::string& dirPath) {
-    std::vector<std::string> executables;
-    DIR* dir = opendir(dirPath.c_str());
-    if (dir != nullptr) {
-        struct dirent* entry;
-        while ((entry = readdir(dir)) != nullptr) {
-            std::string filename = entry->d_name;
-            if (filename != "." && filename != "..") {
-                std::string filePath = dirPath + "/" + filename;
-                if (isExecutable(filePath)) {
-                    executables.push_back(filename);
+    struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode and echoing
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
+    while (true) {
+        ch = getchar();
+
+        // Arrow key handling
+        if (ch == 27) {  // ESC character (start of arrow sequence)
+            getchar();     // Skip the '['
+            char arrow = getchar();
+            if (arrow == 'A') {  // Up arrow
+                if (historyIndex > 0) {
+                    historyIndex--;
+                    input = history[historyIndex];
+                    std::cout << "\rPyroShell$ " << input << " ";
+                }
+            } else if (arrow == 'B') {  // Down arrow
+                if (historyIndex < history.size() - 1) {
+                    historyIndex++;
+                    input = history[historyIndex];
+                    std::cout << "\rPyroShell$ " << input << " ";
+                } else {
+                    input.clear();
                 }
             }
         }
-        closedir(dir);
+        else if (ch == '\n') {  // Enter key
+            std::cout << std::endl;
+            if (!input.empty()) {
+                history.push_back(input);
+                historyIndex = history.size();
+            }
+            break;
+        }
+        else if (ch == 127) {  // Backspace
+            if (!input.empty()) {
+                input.pop_back();
+                std::cout << "\b \b";
+            }
+        }
+        else {  // Regular character
+            input += ch;
+            std::cout << ch;
+        }
     }
-    return executables;
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    return input;
 }
 
 void parseInput(std::string input) {
@@ -218,8 +252,7 @@ int main() {
 
     while (true) {
         std::cout << "PyroShell$ ";
-        std::getline(std::cin, input);
-
+        input = readInputWithHistory();
         if (input == "exit") {
             break;  // Exit the shell
         }
