@@ -221,7 +221,8 @@ std::string readInputWithTabCompletion() {
             std::vector<std::string> suggestions = listDirectorySuggestions(input);
             if (!suggestions.empty()) {
                 // Complete the input with the first suggestion
-                input += suggestions[0].substr(input.find_last_of('/') + 1);
+                std::string suggestion = suggestions[0];
+                input += suggestion.substr(input.find_last_of('/') + 1);
                 std::cout << "\rPyroShell$ " << input << " ";
             }
         }
