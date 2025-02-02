@@ -89,7 +89,102 @@ void loadEnvironmentVariables() {
 }
 
 // Function to execute commands, passing environment variables to the child process
+
+// Function to list directories and files for autocompletion
+std::vector<std::string> listDirectorySuggestions(const std::string& input) {
+    std::vector<std::string> suggestions;
+    std::string path = input;
+    if (input.back() == '/') {
+        path = input.substr(0, input.size() - 1);  // Remove trailing slash
+    }
+
+    fs::path dirPath(path);
+    if (fs::exists(dirPath) && fs::is_directory(dirPath)) {
+        for (const auto& entry : fs::directory_iterator(dirPath)) {
+            std::string entryName = entry.path().filename().string();
+            if (entryName.find(path.substr(path.find_last_of('/') + 1)) == 0) {
+                suggestions.push_back(entryName);
+            }
+        }
+    }
+    return suggestions;
+}
+
+std::string readInputWithTabCompletion() {
+    std::string input;
+    char ch;
+
+    struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode and echoing
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
+    while (true) {
+        ch = getchar();
+
+        // Arrow key handling
+        if (ch == 27) {  // ESC character (start of arrow sequence)
+            getchar();     // Skip the '['
+            char arrow = getchar();
+            if (arrow == 'A') {  // Up arrow
+                if (historyIndex > 0) {
+                    historyIndex--;
+                    input = history[historyIndex];
+                    std::cout << "\rPyroShell$ " << input << " ";
+                }
+            } else if (arrow == 'B') {  // Down arrow
+                if (historyIndex < history.size() - 1) {
+                    historyIndex++;
+                    input = history[historyIndex];
+                    std::cout << "\rPyroShell$ " << input << " ";
+                } else {
+                    input.clear();
+                }
+            }
+        }
+        else if (ch == '\n') {  // Enter key
+            std::cout << std::endl;
+            if (!input.empty()) {
+                history.push_back(input);
+                historyIndex = history.size();
+            }
+            break;
+        }
+        else if (ch == 127) {  // Backspace
+            if (!input.empty()) {
+                input.pop_back();
+                std::cout << "\b \b";
+            }
+        }
+        else if (ch == '\t') {  // Tab key
+            // Handle tab completion based on current input
+            std::vector<std::string> suggestions = listDirectorySuggestions(input);
+            if (!suggestions.empty()) {
+                // Complete the input with the first suggestion if non-empty
+                std::string suggestion = suggestions[0];
+                input += suggestion.substr(input.find_last_of('/') + 1);
+                std::cout << "\rPyroShell$ " << input << " ";
+            }
+        }
+        else {  // Regular character
+            input += ch;
+            std::cout << ch;
+        }
+    }
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    return input;
+}
+
+// Updated: Ensure the string is non-empty before performing actions on it.
 void executeCommand(std::vector<std::string>& args) {
+    // Check if args is empty before processing it
+    if (args.empty()) {
+        std::cerr << "Error: No command provided!" << std::endl;
+        return;
+    }
+
     // Expand variables in each argument
     for (auto& arg : args) {
         arg = expandVariables(arg);
@@ -148,93 +243,7 @@ void executeCommand(std::vector<std::string>& args) {
     }
 }
 
-// Function to list directories and files for autocompletion
-std::vector<std::string> listDirectorySuggestions(const std::string& input) {
-    std::vector<std::string> suggestions;
-    std::string path = input;
-    if (input.back() == '/') {
-        path = input.substr(0, input.size() - 1);  // Remove trailing slash
-    }
-
-    fs::path dirPath(path);
-    if (fs::exists(dirPath) && fs::is_directory(dirPath)) {
-        for (const auto& entry : fs::directory_iterator(dirPath)) {
-            std::string entryName = entry.path().filename().string();
-            if (entryName.find(path.substr(path.find_last_of('/') + 1)) == 0) {
-                suggestions.push_back(entryName);
-            }
-        }
-    }
-    return suggestions;
-}
-
 // Function to capture user input with Tab key suggestions
-std::string readInputWithTabCompletion() {
-    std::string input;
-    char ch;
-
-    struct termios oldt, newt;
-    tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt;
-    newt.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode and echoing
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-
-    while (true) {
-        ch = getchar();
-
-        // Arrow key handling
-        if (ch == 27) {  // ESC character (start of arrow sequence)
-            getchar();     // Skip the '['
-            char arrow = getchar();
-            if (arrow == 'A') {  // Up arrow
-                if (historyIndex > 0) {
-                    historyIndex--;
-                    input = history[historyIndex];
-                    std::cout << "\rPyroShell$ " << input << " ";
-                }
-            } else if (arrow == 'B') {  // Down arrow
-                if (historyIndex < history.size() - 1) {
-                    historyIndex++;
-                    input = history[historyIndex];
-                    std::cout << "\rPyroShell$ " << input << " ";
-                } else {
-                    input.clear();
-                }
-            }
-        }
-        else if (ch == '\n') {  // Enter key
-            std::cout << std::endl;
-            if (!input.empty()) {
-                history.push_back(input);
-                historyIndex = history.size();
-            }
-            break;
-        }
-        else if (ch == 127) {  // Backspace
-            if (!input.empty()) {
-                input.pop_back();
-                std::cout << "\b \b";
-            }
-        }
-        else if (ch == '\t') {  // Tab key
-            // Handle tab completion based on current input
-            std::vector<std::string> suggestions = listDirectorySuggestions(input);
-            if (!suggestions.empty()) {
-                // Complete the input with the first suggestion
-                std::string suggestion = suggestions[0];
-                input += suggestion.substr(input.find_last_of('/') + 1);
-                std::cout << "\rPyroShell$ " << input << " ";
-            }
-        }
-        else {  // Regular character
-            input += ch;
-            std::cout << ch;
-        }
-    }
-
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-    return input;
-}
 
 void parseInput(std::string input) {
     input = expandTilde(input);  // Expand ~ to home directory
