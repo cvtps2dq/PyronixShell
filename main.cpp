@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <termios.h>
+#include <stdio.h>
+#include <fcntl.h>
 
 namespace fs = std::filesystem;
 
@@ -146,8 +148,28 @@ void executeCommand(std::vector<std::string>& args) {
     }
 }
 
-// Function to capture user input with arrow keys
-std::string readInputWithHistory() {
+// Function to list directories and files for autocompletion
+std::vector<std::string> listDirectorySuggestions(const std::string& input) {
+    std::vector<std::string> suggestions;
+    std::string path = input;
+    if (input.back() == '/') {
+        path = input.substr(0, input.size() - 1);  // Remove trailing slash
+    }
+
+    fs::path dirPath(path);
+    if (fs::exists(dirPath) && fs::is_directory(dirPath)) {
+        for (const auto& entry : fs::directory_iterator(dirPath)) {
+            std::string entryName = entry.path().filename().string();
+            if (entryName.find(path.substr(path.find_last_of('/') + 1)) == 0) {
+                suggestions.push_back(entryName);
+            }
+        }
+    }
+    return suggestions;
+}
+
+// Function to capture user input with Tab key suggestions
+std::string readInputWithTabCompletion() {
     std::string input;
     char ch;
 
@@ -192,6 +214,15 @@ std::string readInputWithHistory() {
             if (!input.empty()) {
                 input.pop_back();
                 std::cout << "\b \b";
+            }
+        }
+        else if (ch == '\t') {  // Tab key
+            // Handle tab completion based on current input
+            std::vector<std::string> suggestions = listDirectorySuggestions(input);
+            if (!suggestions.empty()) {
+                // Complete the input with the first suggestion
+                input += suggestions[0].substr(input.find_last_of('/') + 1);
+                std::cout << "\rPyroShell$ " << input << " ";
             }
         }
         else {  // Regular character
@@ -252,7 +283,7 @@ int main() {
 
     while (true) {
         std::cout << "PyroShell$ ";
-        input = readInputWithHistory();
+        input = readInputWithTabCompletion();
         if (input == "exit") {
             break;  // Exit the shell
         }
