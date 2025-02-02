@@ -69,7 +69,12 @@ std::string expandTilde(const std::string& input) {
     return input;
 }
 
-void executeCommand(const std::vector<std::string>& args) {
+void executeCommand(std::vector<std::string>& args) {
+    // Expand variables in each argument
+    for (auto& arg : args) {
+        arg = expandVariables(arg);
+    }
+
     // Check if the command is "clear"
     if (args.size() == 1 && args[0] == "clear") {
         system("clear");
@@ -167,7 +172,7 @@ int main() {
     const std::string binDir = "/usr/bin";
 
     while (true) {
-        std::cout << "PyroShell$ ";
+        std::cout << "pyro > ";
         std::getline(std::cin, input);
 
         if (input == "exit") {
