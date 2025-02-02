@@ -69,6 +69,21 @@ std::string expandTilde(const std::string& input) {
     return input;
 }
 
+// Function to load environment variables into the envVars map
+void loadEnvironmentVariables() {
+    extern char** environ;  // Pointer to environment variables
+    for (char** env = environ; *env != nullptr; ++env) {
+        std::string envEntry = *env;
+        size_t pos = envEntry.find('=');
+        if (pos != std::string::npos) {
+            std::string varName = envEntry.substr(0, pos);
+            std::string varValue = envEntry.substr(pos + 1);
+            envVars[varName] = varValue;
+        }
+    }
+}
+
+// Function to execute commands, passing environment variables to the child process
 void executeCommand(std::vector<std::string>& args) {
     // Expand variables in each argument
     for (auto& arg : args) {
@@ -90,7 +105,16 @@ void executeCommand(std::vector<std::string>& args) {
         }
         cargs.push_back(NULL);  // Null terminate the array
 
+        // Pass the environment variables to the child process
+        std::vector<char*> envp;
+        for (const auto& [varName, varValue] : envVars) {
+            std::string envVar = varName + "=" + varValue;
+            envp.push_back(const_cast<char*>(envVar.c_str()));
+        }
+        envp.push_back(NULL);  // Null terminate the environment array
+
         execvp(cargs[0], const_cast<char* const*>(cargs.data()));
+        execve(cargs[0], const_cast<char* const*>(cargs.data()), envp.data());
         std::cerr << "Command execution failed: " << args[0] << std::endl;
         exit(1);
     } else if (pid > 0) {  // Parent process
@@ -171,8 +195,11 @@ int main() {
     std::string input;
     const std::string binDir = "/usr/bin";
 
+    // Load system environment variables into the shell's environment
+    loadEnvironmentVariables();
+
     while (true) {
-        std::cout << "pyro > ";
+        std::cout << "PyroShell$ ";
         std::getline(std::cin, input);
 
         if (input == "exit") {
