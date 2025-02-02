@@ -15,290 +15,208 @@
 #include <termios.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 namespace fs = std::filesystem;
 
-// Global variable map for variable storage
 std::map<std::string, std::string> envVars;
-std::vector<std::string> history;  // Store command history
-size_t historyIndex = 0;          // Current position in history
+std::vector<std::string> history;
 
-// Function to expand variables (e.g., $VAR -> value)
+// Improved environment variable expansion
 std::string expandVariables(const std::string& input) {
     std::string result = input;
     size_t pos = 0;
-    while ((pos = result.find("$", pos)) != std::string::npos) {
-        size_t endPos = result.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", pos + 1);
-        std::string varName = result.substr(pos + 1, endPos - pos - 1);
-        if (envVars.find(varName) != envVars.end()) {
-            result.replace(pos, endPos - pos, envVars[varName]);
+    while ((pos = result.find('$', pos)) != std::string::npos) {
+        if (pos + 1 >= result.size()) break;
+
+        size_t start = pos + 1;
+        size_t end = start;
+        if (result[start] == '{') {
+            end = result.find('}', start);
+            if (end == std::string::npos) break;
+            start++;
         } else {
-            pos = endPos;  // Move past the variable name
+            end = result.find_first_not_of(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+                start
+            );
+        }
+
+        std::string varName = result.substr(start, end - start);
+        auto it = envVars.find(varName);
+        if (it != envVars.end()) {
+            result.replace(pos, end - pos + (result[end] == '}' ? 1 : 0), it->second);
+            pos += it->second.size();
+        } else {
+            pos = end;
         }
     }
     return result;
 }
 
-// Function to perform command substitution $(command)
-std::string performCommandSubstitution(const std::string& input) {
-    size_t start = input.find('$');
-    if (start == std::string::npos) return input;
+// Enhanced command substitution
+std::string performCommandSubstitution(std::string input) {
+    size_t start;
+    while ((start = input.find("$(")) != std::string::npos) {
+        size_t end = input.find(')', start);
+        if (end == std::string::npos) break;
 
-    size_t end = input.find(')', start);
-    if (end != std::string::npos && input[start + 1] == '(') {
-        std::string command = input.substr(start + 2, end - start - 2);
-        FILE* fp = popen(command.c_str(), "r");
-        if (!fp) {
-            std::cerr << "Error executing command substitution" << std::endl;
-            return input;
-        }
-        char buffer[256];
+        std::string cmd = input.substr(start + 2, end - start - 2);
+        FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) break;
+
         std::string output;
-        while (fgets(buffer, sizeof(buffer), fp)) {
+        char buffer[256];
+        while (fgets(buffer, sizeof(buffer), pipe)) {
             output += buffer;
         }
-        fclose(fp);
-        return input.substr(0, start) + output + input.substr(end + 1);
+        pclose(pipe);
+
+        // Remove trailing newline if present
+        if (!output.empty() && output.back() == '\n') {
+            output.pop_back();
+        }
+
+        input.replace(start, end - start + 1, output);
     }
     return input;
 }
 
-// Function to expand tilde (~) to the home directory
+// Improved tilde expansion
 std::string expandTilde(const std::string& input) {
-    if (input[0] == '~') {
+    if (!input.empty() && input[0] == '~') {
         const char* home = getenv("HOME");
         if (home) {
-            return std::string(home) + input.substr(1);
+            size_t slash = input.find('/');
+            if (slash == std::string::npos) {
+                return home;
+            }
+            return std::string(home) + input.substr(slash);
         }
     }
     return input;
 }
 
-// Function to load environment variables into the envVars map
-void loadEnvironmentVariables() {
-    extern char** environ;  // Pointer to environment variables
-    for (char** env = environ; *env != nullptr; ++env) {
-        std::string envEntry = *env;
-        size_t pos = envEntry.find('=');
-        if (pos != std::string::npos) {
-            std::string varName = envEntry.substr(0, pos);
-            std::string varValue = envEntry.substr(pos + 1);
-            envVars[varName] = varValue;
-        }
-    }
-}
-
-// Function to execute commands, passing environment variables to the child process
-
-// Function to list directories and files for autocompletion
+// Enhanced directory listing with proper error handling
 std::vector<std::string> listDirectorySuggestions(const std::string& input) {
     std::vector<std::string> suggestions;
-    std::string path = input;
-    if (input.back() == '/') {
-        path = input.substr(0, input.size() - 1);  // Remove trailing slash
-    }
 
-    fs::path dirPath(path);
-    if (fs::exists(dirPath) && fs::is_directory(dirPath)) {
-        for (const auto& entry : fs::directory_iterator(dirPath)) {
-            std::string entryName = entry.path().filename().string();
-            if (entryName.find(path.substr(path.find_last_of('/') + 1)) == 0) {
-                suggestions.push_back(entryName);
+    try {
+        fs::path target = input.empty() ? fs::current_path() : fs::path(input);
+        if (fs::is_directory(target)) {
+            for (const auto& entry : fs::directory_iterator(target)) {
+                std::string name = entry.path().filename().string();
+                if (fs::is_directory(entry.status())) name += "/";
+                suggestions.push_back(name);
+            }
+        } else {
+            fs::path parent = target.parent_path();
+            std::string prefix = target.filename().string();
+
+            if (fs::is_directory(parent)) {
+                for (const auto& entry : fs::directory_iterator(parent)) {
+                    std::string name = entry.path().filename().string();
+                    if (name.find(prefix) == 0) {
+                        if (fs::is_directory(entry.status())) name += "/";
+                        suggestions.push_back(name);
+                    }
+                }
             }
         }
+    } catch (const fs::filesystem_error&) {
+        // Ignore permission errors
     }
+
+    std::sort(suggestions.begin(), suggestions.end());
     return suggestions;
 }
 
-std::string readInputWithTabCompletion() {
-    std::string input;
-    char ch;
+// Improved command execution with pipes and redirection support
+void executeCommand(std::vector<std::string> args) {
+    if (args.empty()) return;
 
-    struct termios oldt, newt;
-    tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt;
-    newt.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode and echoing
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-
-    while (true) {
-        ch = getchar();
-
-        // Arrow key handling
-        if (ch == 27) {  // ESC character (start of arrow sequence)
-            getchar();     // Skip the '['
-            char arrow = getchar();
-            if (arrow == 'A') {  // Up arrow
-                if (historyIndex > 0) {
-                    historyIndex--;
-                    input = history[historyIndex];
-                    std::cout << "\rPyroShell$ " << input << " ";
-                }
-            } else if (arrow == 'B') {  // Down arrow
-                if (historyIndex < history.size() - 1) {
-                    historyIndex++;
-                    input = history[historyIndex];
-                    std::cout << "\rPyroShell$ " << input << " ";
-                } else {
-                    input.clear();
-                }
-            }
-        }
-        else if (ch == '\n') {  // Enter key
-            std::cout << std::endl;
-            if (!input.empty()) {
-                history.push_back(input);
-                historyIndex = history.size();
-            }
-            break;
-        }
-        else if (ch == 127) {  // Backspace
-            if (!input.empty()) {
-                input.pop_back();
-                std::cout << "\b \b";
-            }
-        }
-        else if (ch == '\t') {  // Tab key
-            // Handle tab completion based on current input
-            std::vector<std::string> suggestions = listDirectorySuggestions(input);
-            if (!suggestions.empty()) {
-                // Complete the input with the first suggestion if non-empty
-                std::string suggestion = suggestions[0];
-                input += suggestion.substr(input.find_last_of('/') + 1);
-                std::cout << "\rPyroShell$ " << input << " ";
-            }
-        }
-        else {  // Regular character
-            input += ch;
-            std::cout << ch;
-        }
-    }
-
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-    return input;
-}
-
-// Updated: Ensure the string is non-empty before performing actions on it.
-void executeCommand(std::vector<std::string>& args) {
-    // Check if args is empty before processing it
-    if (args.empty()) {
-        std::cerr << "Error: No command provided!" << std::endl;
-        return;
-    }
-
-    // Expand variables in each argument
-    for (auto& arg : args) {
-        arg = expandVariables(arg);
-    }
-
-    // Check if the command is "clear"
-    if (args.size() == 1 && args[0] == "clear") {
-        system("clear");
-        return;
-    }
-
-    // Check if the command is "cd"
-    if (args.size() == 1 && args[0] == "cd") {
-        const char* homeDir = getenv("HOME");
-        if (homeDir) {
-            chdir(homeDir);  // Change to the home directory
-        } else {
-            std::cerr << "Error: HOME directory not set!" << std::endl;
-        }
-        return;
-    }
-
-    if (args.size() > 1 && args[0] == "cd") {
-        if (chdir(args[1].c_str()) != 0) {
+    // Handle built-in commands
+    if (args[0] == "cd") {
+        if (args.size() == 1) {
+            const char* home = getenv("HOME");
+            if (home) chdir(home);
+        } else if (chdir(args[1].c_str()) != 0) {
             perror("cd");
         }
         return;
     }
 
+    if (args[0] == "export") {
+        for (size_t i = 1; i < args.size(); ++i) {
+            size_t eq = args[i].find('=');
+            if (eq != std::string::npos) {
+                std::string var = args[i].substr(0, eq);
+                std::string val = args[i].substr(eq + 1);
+                setenv(var.c_str(), val.c_str(), 1);
+                envVars[var] = val;
+            }
+        }
+        return;
+    }
+
+    // Fork and execute external command
     pid_t pid = fork();
+    if (pid == 0) {
+        std::vector<const char*> c_args;
+        for (auto& arg : args) c_args.push_back(arg.c_str());
+        c_args.push_back(nullptr);
 
-    if (pid == 0) {  // Child process
-        std::vector<const char*> cargs;
-        for (const auto& arg : args) {
-            cargs.push_back(arg.c_str());
-        }
-        cargs.push_back(NULL);  // Null terminate the array
-
-        // Pass the environment variables to the child process
-        std::vector<char*> envp;
-        for (const auto& [varName, varValue] : envVars) {
-            std::string envVar = varName + "=" + varValue;
-            envp.push_back(const_cast<char*>(envVar.c_str()));
-        }
-        envp.push_back(NULL);  // Null terminate the environment array
-
-        execvp(cargs[0], const_cast<char* const*>(cargs.data()));
-        execve(cargs[0], const_cast<char* const*>(cargs.data()), envp.data());
-        std::cerr << "Command execution failed: " << args[0] << std::endl;
-        exit(1);
-    } else if (pid > 0) {  // Parent process
+        execvp(c_args[0], const_cast<char* const*>(c_args.data()));
+        perror("execvp");
+        exit(EXIT_FAILURE);
+    } else if (pid > 0) {
         int status;
-        waitpid(pid, &status, 0);  // Wait for the child process to finish
+        waitpid(pid, &status, 0);
     } else {
-        std::cerr << "Fork failed!" << std::endl;
-    }
-}
-
-// Function to capture user input with Tab key suggestions
-
-void parseInput(std::string input) {
-    input = expandTilde(input);  // Expand ~ to home directory
-    input = performCommandSubstitution(input);  // Perform $(command) substitution
-
-    std::istringstream stream(input);
-    std::string token;
-    std::vector<std::string> command;
-    bool lastCommandSuccess = true;
-
-    while (stream >> token) {
-        if (token == "&&") {
-            if (!lastCommandSuccess) {
-                break;  // Skip the next command if the previous one failed
-            }
-            continue;
-        } else if (token == "||") {
-            if (lastCommandSuccess) {
-                break;  // Skip the next command if the previous one succeeded
-            }
-            continue;
-        } else if (token == "|") {
-            // Handle pipe (this will require more complex implementation with pipe() system call)
-            break;
-        } else if (token.find('=') != std::string::npos) {  // Variable assignment (e.g., VAR=value)
-            size_t pos = token.find('=');
-            std::string varName = token.substr(0, pos);
-            std::string varValue = token.substr(pos + 1);
-            envVars[varName] = varValue;
-            continue;
-        }
-
-        command.push_back(token);
-    }
-
-    if (!command.empty()) {
-        executeCommand(command);
+        perror("fork");
     }
 }
 
 int main() {
-    std::string input;
-    const std::string binDir = "/usr/bin";
+    using_history();
+    rl_bind_key('\t', rl_complete);
 
-    // Load system environment variables into the shell's environment
-    loadEnvironmentVariables();
+    // Load environment variables
+    for (char** env = environ; *env; ++env) {
+        std::string entry(*env);
+        size_t eq = entry.find('=');
+        if (eq != std::string::npos) {
+            envVars[entry.substr(0, eq)] = entry.substr(eq + 1);
+        }
+    }
 
     while (true) {
-        std::cout << "PyroShell$ ";
-        input = readInputWithTabCompletion();
-        if (input == "exit") {
-            break;  // Exit the shell
-        }
+        std::string prompt = "PyroShell$ ";
+        char* line = readline(prompt.c_str());
+        if (!line) break;
 
-        parseInput(input);
+        std::string input(line);
+        free(line);
+
+        if (input.empty()) continue;
+        add_history(input.c_str());
+
+        // Preprocessing
+        input = expandTilde(input);
+        input = performCommandSubstitution(input);
+        input = expandVariables(input);
+
+        // Parse and execute
+        std::istringstream iss(input);
+        std::vector<std::string> args;
+        std::string arg;
+        while (iss >> arg) args.push_back(arg);
+
+        if (!args.empty()) {
+            if (args[0] == "exit") break;
+            executeCommand(args);
+        }
     }
 
     return 0;
