@@ -96,6 +96,24 @@ void executeCommand(std::vector<std::string>& args) {
         return;
     }
 
+    // Check if the command is "cd"
+    if (args.size() == 1 && args[0] == "cd") {
+        const char* homeDir = getenv("HOME");
+        if (homeDir) {
+            chdir(homeDir);  // Change to the home directory
+        } else {
+            std::cerr << "Error: HOME directory not set!" << std::endl;
+        }
+        return;
+    }
+
+    if (args.size() > 1 && args[0] == "cd") {
+        if (chdir(args[1].c_str()) != 0) {
+            perror("cd");
+        }
+        return;
+    }
+
     pid_t pid = fork();
 
     if (pid == 0) {  // Child process
